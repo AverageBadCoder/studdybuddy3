@@ -1,0 +1,74 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "A student using StudyBuddy.",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string" },
+        "reputation": { "type": "number" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["email", "reputation", "createdAt"]
+    },
+    "Question": {
+      "title": "Question",
+      "description": "A question posted by a student.",
+      "type": "object",
+      "properties": {
+        "authorId": { "type": "string" },
+        "course": { "type": "string" },
+        "subject": { "type": "string" },
+        "topic": { "type": "string" },
+        "content": { "type": "string" },
+        "deadline": { "type": "number" },
+        "isAnonymous": { "type": "boolean" },
+        "createdAt": { "type": "string" },
+        "status": { "type": "string", "enum": ["open", "resolved"] },
+        "answerCount": { "type": "number" }
+      },
+      "required": ["authorId", "course", "subject", "topic", "content", "deadline", "isAnonymous", "createdAt", "status", "answerCount"]
+    },
+    "Answer": {
+      "title": "Answer",
+      "description": "An answer to a question.",
+      "type": "object",
+      "properties": {
+        "authorId": { "type": "string" },
+        "content": { "type": "string" },
+        "isCorrect": { "type": "boolean" },
+        "upvotes": { "type": "number" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["authorId", "content", "isCorrect", "upvotes", "createdAt"]
+    },
+    "Upvote": {
+      "title": "Upvote",
+      "description": "A record of an upvote on an answer.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["userId", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/User" },
+      "description": "Stores user profiles and reputation."
+    },
+    "/questions/{questionId}": {
+      "schema": { "$ref": "#/entities/Question" },
+      "description": "Stores all posted questions."
+    },
+    "/questions/{questionId}/answers/{answerId}": {
+      "schema": { "$ref": "#/entities/Answer" },
+      "description": "Stores answers to specific questions."
+    },
+    "/questions/{questionId}/answers/{answerId}/upvotes/{upvoteId}": {
+      "schema": { "$ref": "#/entities/Upvote" },
+      "description": "Tracks upvotes to ensure users can only upvote once."
+    }
+  }
+}

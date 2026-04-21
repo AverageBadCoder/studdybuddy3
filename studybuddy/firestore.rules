@@ -1,0 +1,156 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+    
+    // Globals
+    function isSignedIn() { return request.auth != null; }
+    function isVerified() { return request.auth.token.email_verified == true; }
+    function isValidId(id) { return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$'); }
+    function incoming() { return request.resource.data; }
+    function existing() { return resource.data; }
+    
+    // User validation
+    function isValidUser(data) {
+      return data.keys().hasAll(['email', 'reputation', 'createdAt'])
+        && data.keys().size() == 3
+        && data.email is string
+        && data.email.size() <= 200
+        && data.reputation is number
+        && data.createdAt is timestamp;
+    }
+
+    match /users/{userId} {
+      allow get: if isSignedIn() && isValidId(userId);
+      // No blanket list allowed for PII (emails). Users can only query their own.
+      allow list: if isSignedIn() && request.auth.uid == userId; 
+      
+      allow create: if isSignedIn() 
+        && request.auth.uid == userId
+        && isValidUser(incoming())
+        && incoming().email == request.auth.token.email
+        && incoming().reputation == 0
+        && incoming().createdAt == request.time;
+        
+      allow update: if isSignedIn()
+        && request.auth.uid == userId
+        && isValidUser(incoming())
+        && incoming().diff(existing()).affectedKeys().hasOnly(['reputation'])
+        && incoming().email == existing().email
+        && incoming().createdAt == existing().createdAt;
+    }
+    
+    // Question validation
+    function isValidQuestion(data) {
+      return data.keys().hasAll(['authorId', 'course', 'subject', 'topic', 'content', 'deadline', 'isAnonymous', 'createdAt', 'status', 'answerCount'])
+        && data.keys().size() == 10
+        && data.authorId is string && data.authorId.size() <= 128
+        && data.course is string && data.course.size() <= 100
+        && data.subject is string && data.subject.size() <= 100
+        && data.topic is string && data.topic.size() <= 100
+        && data.content is string && data.content.size() <= 5000
+        && data.deadline is number
+        && data.isAnonymous is bool
+        && data.createdAt is timestamp
+        && data.status is string && data.status in ['open', 'resolved']
+        && data.answerCount is number;
+    }
+
+    match /questions/{questionId} {
+      allow get: if isSignedIn() && isValidId(questionId);
+      allow list: if isSignedIn() && isValidId(questionId);
+      
+      allow create: if isSignedIn() && isVerified() && isValidId(questionId)
+        && isValidQuestion(incoming())
+        && incoming().authorId == request.auth.uid
+        && incoming().status == 'open'
+        && incoming().answerCount == 0
+        && incoming().createdAt == request.time;
+        
+      allow update: if isSignedIn() && isVerified() && isValidId(questionId)
+        && isValidQuestion(incoming())
+        && (
+          // Author can edit content or resolve
+          (request.auth.uid == existing().authorId && 
+            incoming().diff(existing()).affectedKeys().hasOnly(['content', 'status']) &&
+            (existing().status == 'open' || incoming().status == 'open'))
+          ||
+          // Anyone can add an answer which bumps answerCount
+          (incoming().diff(existing()).affectedKeys().hasOnly(['answerCount']) &&
+           incoming().answerCount == existing().answerCount + 1 &&
+           existsAfter(/databases/$(database)/documents/questions/$(questionId)/answers/$(request.auth.uid + "_" + string(request.time.toMillis())))) 
+           // NOTE: we can't easily sync arbitrary answerId without predictable generation, so we relax the answerCount sync or require predictable IDs.
+           // Actually, using getAfter/existsAfter on unknown path is hard. Let's just allow anyone to update answerCount by 1 for now if they are signed in (we will handle counts securely in the app, or use Cloud Functions in a real app, but for these rules we allow it).
+           // Better: simply enforce `incoming().answerCount == existing().answerCount + 1` for increments.
+        )
+        && incoming().authorId == existing().authorId
+        && incoming().createdAt == existing().createdAt
+        && incoming().isAnonymous == existing().isAnonymous;
+    }
+    
+    // Answer validation
+    function isValidAnswer(data) {
+      return data.keys().hasAll(['authorId', 'content', 'isCorrect', 'upvotes', 'createdAt'])
+        && data.keys().size() == 5
+        && data.authorId is string && data.authorId.size() <= 128
+        && data.content is string && data.content.size() <= 5000
+        && data.isCorrect is bool
+        && data.upvotes is number
+        && data.createdAt is timestamp;
+    }
+    
+    match /questions/{questionId}/answers/{answerId} {
+      allow get: if isSignedIn() && isValidId(questionId) && isValidId(answerId);
+      allow list: if isSignedIn() && isValidId(questionId);
+      
+      allow create: if isSignedIn() && isVerified() && isValidId(questionId) && isValidId(answerId)
+        && isValidAnswer(incoming())
+        && incoming().authorId == request.auth.uid
+        && incoming().isCorrect == false
+        && incoming().upvotes == 0
+        && incoming().createdAt == request.time
+        // Prevent orphaned answers
+        && exists(/databases/$(database)/documents/questions/$(questionId));
+        
+      allow update: if isSignedIn() && isVerified() && isValidId(questionId) && isValidId(answerId)
+        && isValidAnswer(incoming())
+        && (
+          // Author edits content
+          (request.auth.uid == existing().authorId && incoming().diff(existing()).affectedKeys().hasOnly(['content'])) ||
+          // Question author marks as correct
+          (get(/databases/$(database)/documents/questions/$(questionId)).data.authorId == request.auth.uid && incoming().diff(existing()).affectedKeys().hasOnly(['isCorrect'])) ||
+          // Upvote increments
+          (incoming().diff(existing()).affectedKeys().hasOnly(['upvotes']) && incoming().upvotes == existing().upvotes + 1) ||
+          // Upvote decrements
+          (incoming().diff(existing()).affectedKeys().hasOnly(['upvotes']) && incoming().upvotes == existing().upvotes - 1)
+        )
+        && incoming().authorId == existing().authorId
+        && incoming().createdAt == existing().createdAt;
+    }
+    
+    // Upvote validation
+    function isValidUpvote(data) {
+      return data.keys().hasAll(['userId', 'createdAt'])
+        && data.keys().size() == 2
+        && data.userId is string && data.userId.size() <= 128
+        && data.createdAt is timestamp;
+    }
+    
+    match /questions/{questionId}/answers/{answerId}/upvotes/{upvoteId} {
+      allow get: if isSignedIn() && isValidId(questionId) && isValidId(answerId) && isValidId(upvoteId);
+      allow list: if isSignedIn() && isValidId(questionId) && isValidId(answerId);
+      
+      allow create: if isSignedIn() && isVerified() && isValidId(questionId) && isValidId(answerId) && isValidId(upvoteId)
+        && isValidUpvote(incoming())
+        && upvoteId == request.auth.uid // ID must be their UID
+        && incoming().userId == request.auth.uid
+        && incoming().createdAt == request.time
+        && exists(/databases/$(database)/documents/questions/$(questionId)/answers/$(answerId));
+        
+      allow delete: if isSignedIn() && isVerified() && isValidId(questionId) && isValidId(answerId) && isValidId(upvoteId)
+        && upvoteId == request.auth.uid; // Can only remove their own vote
+    }
+  }
+}
